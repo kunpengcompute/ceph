@@ -166,7 +166,6 @@ namespace ECTransaction {
 	    ceph_assert(tail_finish <= projected_size);
 	  }
 	   uint64_t hi_head_start = 0, hi_head_len = 0;
-
 	   if(
 		partial_write && HiSetWriteSection(extent.get_start(), extent.get_len(), chunk_size, hi_head_start, hi_head_len)
 	     ){

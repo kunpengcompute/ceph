@@ -24,7 +24,7 @@ struct HiEcInfo{
 	uint64_t cSize;
 	uint64_t sWidth;
 
-	HiEcInfo (size_t k, size_t km, const std::vector<int> &chunkMapping, uint64_t chunkSize, uint64_t striprWidth)
+	HiEcInfo (size_t k, size_t km, const std::vector<int> &chunkMapping, uint64_t chunkSize, uint64_t stripeWidth)
 		: dataCnt(k), chunkCnt(km), cMapping(chunkMapping), cSize(chunkSize), sWidth(stripeWidth)
 	{}
 

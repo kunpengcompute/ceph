@@ -1761,7 +1761,7 @@ void ECBackend::do_read_op(ReadOp &op)
 	  dout(20) << __func__ << ": second.partial_read="<< i->second.partial_read << dendl;
 	  if (i->second.partial_read) {
 		  map<int, set<pair<uint64_t, uint64_t>>> wants_tmp;
-		  HiECInfo ec_info(ec_impl->get_data_chunk_count(),ec_impl->get_chunk_count(),
+		  HiEcInfo ec_info(ec_impl->get_data_chunk_count(),ec_impl->get_chunk_count(),
 				   ec_impl->get_chunk_mapping(), sinfo.get_chunk_size(),
 				  sinfo.get_stripe_width());
 		  HiGetShardsRangeToRead(make_pair(j->get<0>(), j->get<1>()), ec_info , wants_tmp);
@@ -1800,7 +1800,6 @@ void ECBackend::do_read_op(ReadOp &op)
 	    chunk_off_len.second,
 	    j->get<2>()));
       }
-       // ceph_assert(!need_attrs);
   }
 
   bool need_attrs = i->second.want_attrs;
