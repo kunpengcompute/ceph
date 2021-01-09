@@ -21,7 +21,8 @@
 #include "erasure-code/ErasureCodeInterface.h"
 #include "PGTransaction.h"
 #include "ExtentCache.h"
-#include "hi_CoreUtil.h"
+#include "hi_coreutil.h"
+
 namespace ECTransaction {
   struct WritePlan {
     PGTransactionUPtr t;
@@ -192,8 +193,9 @@ namespace ECTransaction {
 	  raw_write_set.move_into(write_set);
 	  map<uint64_t, uint64_t> to_read;
 	  plan.to_read[i.first].move_into(to_read);
-	  ldpp_dout(dpp, 20) << __func__ << ": partial_write=" << partial_write << "write_set=" << write_set		<< " to_read=" << to_read << dendl;
-	  
+	  ldpp_dout(dpp, 20) << __func__ << ": partial_write=" << partial_write << "write_set=" << write_set
+  	   << " to_read=" << to_read << dendl;
+
 	  if(partial_write && HiRebuildToread(write_set, chunk_size, to_read)) {
 	    ldpp_dout(dpp, 20) << __func__ << ": to_read=" << to_read << dendl;
 	    plan.to_read[i.first].clear();

@@ -25,6 +25,7 @@
 #include "ECMsgTypes.h"
 
 #include "PrimaryLogPG.h"
+#include "hi_coreutil.h"
 
 #define dout_context cct
 #define dout_subsys ceph_subsys_osd
@@ -189,6 +190,13 @@ void ECBackend::RecoveryOp::dump(Formatter *f) const
   f->dump_stream("extent_requested") << extent_requested;
 }
 
+static void log_on_exit(void *p)
+{
+	HiFinish();
+}
+
+static OnExitManager exit_callbacks;
+
 ECBackend::ECBackend(
   PGBackend::Listener *pg,
   const coll_t &coll,
@@ -202,6 +210,8 @@ ECBackend::ECBackend(
     sinfo(ec_impl->get_data_chunk_count(), stripe_width) {
   ceph_assert((ec_impl->get_data_chunk_count() *
 	  ec_impl->get_chunk_size(stripe_width)) == stripe_width);
+  HiInit("/etc/ceph/ceph.conf", cct->_conf->name.get_id());
+  exit_callbacks.add_callback(log_on_exit, nullptr);
 }
 
 PGBackend::RecoveryHandle *ECBackend::open_recovery_op()
@@ -1199,13 +1209,15 @@ void ECBackend::handle_sub_read_reply(
 	riter->get<2>()[from].claim(j->second);
       }else {
        while (req_iter != rop.to_read.find(i->first)->second.to_read.end()){
+	       //uint64_t off = sinfo.logical_to_prev_chunk_offset(req_iter->get<0>());
 	       set<int> shards;
 
-	       HiECInfo ec_info (ec_impl->get_data_chunk_count(),ec_impl->get_chunk_count(),
+	       HiEcInfo ec_info (ec_impl->get_data_chunk_count(),ec_impl->get_chunk_count(),
 			         ec_impl->get_chunk_mapping(), sinfo.get_chunk_size(),
 				 sinfo.get_stripe_width());
 	       HiGetRelatedShards(make_pair(req_iter->get<0>(), req_iter->get<1>()), ec_info, shards);
 
+	       // get_off_len_shards(req_iter->get<0>(), req_iter->get<1>(), shards);
 	       dout(20) << __func__ << " shards:" << shards << "req" << *req_iter << "from:"
 		        << from << " j:" << *j << dendl;
 	       
@@ -1911,13 +1923,17 @@ bool ECBackend::can_partial_read_log(const hobject_t &hoid)
 
    dout(0) << __func__ <<" : have="<<have<< " want_to_read=" << want_to_read<<" error_shards="<<error_shards<<" shards="<<shards<<" hoid="<<hoid<< dendl;
    return false;
+
 }
 void ECBackend::start_rmw(Op *op, PGTransactionUPtr &&t)
 {
   ceph_assert(op);
   dout(20) << __func__ << ": " << *op << dendl;
+  bool cpr = can_partial_read_log(op->hoid);
+  op->ec_partial_read = cct->_conf->osd_ec_partial_read && cpr;
+  op->ec_partial_write = cct->_conf->osd_ec_partial_write && cpr;
   op->plan = ECTransaction::get_write_plan(
-    cct->_conf->osd_ec_partial_read && cct->_conf->osd_ec_partial_write && can_partial_read_log(op->hoid),
+    op->ec_partial_read && op->ec_partial_write,
     sinfo,
     std::move(t),
     [&](const hobject_t &i) {
@@ -2003,12 +2019,9 @@ bool ECBackend::try_state_to_reads()
 
   if (!op->remote_read.empty()) {
     ceph_assert(get_parent()->get_pool().allows_ecoverwrites());
-    list<boost::tuple<hobject_t, extent_set, bool>> remote_read_ext;
-    for (auto &rd : op->remote_read) {
-	    remote_read_ext.push_back(boost::make_tuple(rd.first, rd.second, can_partial_read_log(rd.first)));
-    }
     objects_read_async_no_cache(
-      remote_read_ext,
+      op->remote_read,
+      op->ec_partial_read,
       [this, op](map<hobject_t,pair<int, extent_map> > &&results) {
 	for (auto &&i: results) {
 	  op->remote_read_result.emplace(i.first, i.second.second);
@@ -2023,8 +2036,8 @@ bool ECBackend::try_state_to_reads()
 bool ECBackend::try_reads_to_commit()
 {
   if (waiting_reads.empty()) {
-     dout(20) << __func__ << ": waiting_read is empty " << dendl;
 
+     dout(20) << __func__ << ": waiting_read is empty " << dendl;
      return false;
   }
   Op *op = &(waiting_reads.front());
@@ -2071,7 +2084,7 @@ bool ECBackend::try_reads_to_commit()
   bool have_append = false;
   if (op->plan.t) {
   
-  HiECInfo ec_info(ec_impl->get_data_chunk_count(), ec_impl->get_chunk_count(),
+  HiEcInfo ec_info(ec_impl->get_data_chunk_count(), ec_impl->get_chunk_count(),
 		   ec_impl->get_chunk_mapping(), sinfo.get_chunk_size(),
 		   sinfo.get_stripe_width());
     set<int> want_to_read;
@@ -2233,7 +2246,7 @@ bool ECBackend::try_finish_rmw()
   }
   Op *op = &(waiting_commit.front());
   if (op->write_in_progress()) {
-    dout(20) << __func__ << ": op write in progess" << dendl;
+    dout(20) << __func__ << ": op write in progress" << dendl;
     return false;
   }
   waiting_commit.pop_front();
@@ -2451,7 +2464,7 @@ struct CallClientContexts :
 
     vector<int> chunk_idx;
 
-    HiECInfo ec_info(ec->ec_impl->get_data_chunk_count(), ec->ec_impl->get_chunk_count(),
+    HiEcInfo ec_info(ec->ec_impl->get_data_chunk_count(), ec->ec_impl->get_chunk_count(),
 		     ec->ec_impl->get_chunk_mapping(), ec->sinfo.get_chunk_size(),
 		     ec->sinfo.get_stripe_width());
     HiGetReconstructShards(start, count,len, ec_info, chunk_idx);
@@ -2464,18 +2477,20 @@ struct CallClientContexts :
   }
 
   void reconstruct(pair<uint64_t, uint64_t> in ,map<int, bufferlist> &to_decode, bufferlist *out) {
+
 	  auto dpp=ec->get_parent()->get_dpp();
 	  ldpp_dout(dpp, 20) << " in: " << in <<dendl;
 
-	  HiECInfo ec_info(ec->ec_impl->get_data_chunk_count(),ec->ec_impl->get_chunk_count(),
+	 HiEcInfo ec_info(ec->ec_impl->get_data_chunk_count(),ec->ec_impl->get_chunk_count(),
 			   ec->ec_impl->get_chunk_mapping(),ec->sinfo.get_chunk_size(),
 			   ec->sinfo.get_stripe_width());
-
 	  vector<boost::tuple<unsigned int, unsigned int,unsigned int>> chunk_info;
 	  HiReconstructPrepare(ec_info,in,chunk_info);
+
 	  for( auto info : chunk_info)
 		  reconstruct_shard(info.get<0>(), info.get<1>(), info.get<2>(), to_decode, out);
   }
+
   void finish(pair<RecoveryMessages *, ECBackend::read_result_t &> &in) override {
     ECBackend::read_result_t &res = in.second;
     extent_map result;

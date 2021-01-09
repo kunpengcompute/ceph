@@ -17,6 +17,7 @@
 
 #include <boost/intrusive/set.hpp>
 #include <boost/intrusive/list.hpp>
+#include "include/on_exit.h"
 
 #include "OSD.h"
 #include "PGBackend.h"
@@ -198,15 +199,24 @@ public:
 
   template <typename Func>
   void objects_read_async_no_cache(
-    const list<boost::tuple<hobject_t, extent_set, bool>> &remote_read_ext,
+    const map<hobject_t,extent_set> &to_read,
+    bool partial_read,
     Func &&on_complete) {
     std::map<hobject_t, std::pair<std::list<boost::tuple<uint64_t, uint64_t, uint32_t> >, bool >  > _to_read;
-    for (auto &&hpair: remote_read_ext) {
-      auto &l = _to_read[hpair.get<0>()];
-      l.second = hpair.get<2>();
-      for (auto extent: hpair.get<1>()) {
-	l.first.emplace_back(extent.first, extent.second, 0);
+    for (auto &&hpair: to_read) {
+      auto &l = _to_read[hpair.first];
+      l.second = partial_read;
+      for (auto extent: hpair.second) {
+   uint64_t off = extent.first;
+   uint64_t len = extent.second;
+   if ( l.second) {
+      pair<uint64_t, uint64_t> tmp = sinfo.offset_len_to_stripe_bounds(
+      make_pair(extent.first,extent.second));
+      off = tmp.first;
+      len = tmp.second;
       }
+        l.first.emplace_back(off, len, 0);
+    }
     }
   objects_read_and_reconstruct(
   _to_read,
@@ -509,6 +519,8 @@ public:
     map<hobject_t,extent_set> pending_read; // subset already being read
     map<hobject_t,extent_set> remote_read;  // subset we must read
     map<hobject_t,extent_map> remote_read_result;
+    bool ec_partial_read;
+    bool ec_partial_write;
     bool read_in_progress() const {
       return !remote_read.empty() && remote_read_result.empty();
     }
@@ -596,6 +608,8 @@ public:
   void check_ops();
 
   ErasureCodeInterfaceRef ec_impl;
+
+  OnExitManager exit_callbacks;
 
 
   /**
